@@ -8,6 +8,10 @@ import threading
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 from typing import Tuple, Dict
+import torch
+import gc
+from contextlib import contextmanager
+
 
 logging.basicConfig(level=logging.INFO)
 
@@ -15,6 +19,59 @@ logging.basicConfig(level=logging.INFO)
 _env_ready = False
 _env_lock = threading.Lock()
 _s3_client = None
+
+@contextmanager
+def churn_guard():
+    try:
+        torch.cuda.synchronize()
+    except Exception:
+        pass
+    yield
+    safe_cuda_cleanup("churn_guard")
+
+
+def safe_cuda_cleanup(comment: str = ""):
+    try:
+        torch.cuda.synchronize()
+    except Exception:
+        pass
+    gc.collect()
+    try:
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+def unload_pipeline(pipe):
+    if pipe is None:
+        return
+    # Best-effort adapter cleanup
+    try:
+        if hasattr(pipe, "delete_adapters"):
+            pipe.delete_adapters()
+        elif hasattr(pipe, "disable_lora"):
+            pipe.disable_lora()
+    except Exception:
+        pass
+
+    # Move submodules to CPU to free VRAM
+    try:
+        pipe.to("cpu")
+    except Exception:
+        pass
+
+    # Break strong refs to large parts, helps GC
+    for attr in ("transformer", "text_encoder", "text_encoder_2", "vae", "unet"):
+        if hasattr(pipe, attr):
+            try:
+                setattr(pipe, attr, None)
+            except Exception:
+                pass
+
+    # Drop the pipeline reference in caller after this returns
+    safe_cuda_cleanup("unload_pipeline")
+
+
+
 
 def get_bucket_name() -> str:
     return os.getenv("B2_BUCKET")
@@ -132,22 +189,22 @@ def initialize_worker_environment():
 
     model_files = {
         "main_model": {
-            "env_var": "MODEL_FILENAME",
-            "default": "getphatFLUXReality_v8.safetensors",
+            "env_var": "Flux_Model_001.safetensors",
+            "default": "Flux_Model_001.safetensors",
             "s3_key": "models/{filename}",
-            "local_path": "/workspace/models/{filename}"
+            "local_path": "/runpod-volume/models/{filename}"
         },
         "t5_encoder": {
             "s3_key": "models/t5xxl_fp16.safetensors",
-            "local_path": "/workspace/models/t5xxl_fp16.safetensors"
+            "local_path": "/runpod-volume/models/t5xxl_fp16.safetensors"
         },
         "clip_encoder": {
             "s3_key": "models/clip_l.safetensors",
-            "local_path": "/workspace/models/clip_l.safetensors"
+            "local_path": "/runpod-volume/models/clip_l.safetensors"
         },
         "vae": {
             "s3_key": "models/ae.safetensors",
-            "local_path": "/workspace/models/ae.safetensors"
+            "local_path": "/runpod-volume/models/ae.safetensors"
         }
     }
 
@@ -179,5 +236,5 @@ def initialize_worker_environment():
                 raise
 
     # Ensure loras directory exists
-    os.makedirs("/workspace/models/loras", exist_ok=True)
+    os.makedirs("/runpod-volume/loras", exist_ok=True)
     logging.info("LORA directory ready for on-demand downloads")

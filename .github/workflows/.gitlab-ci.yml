@@ -1,0 +1,20 @@
+# yaml
+stages: [build]
+
+variables:
+  DOCKER_DRIVER: overlay2
+
+build_and_push:
+  stage: build
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  before_script:
+    - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+  script:
+    - docker build -t "$IMAGE_NAME:latest" .
+    - docker tag "$IMAGE_NAME:latest" "$IMAGE_NAME:${CI_COMMIT_SHORT_SHA}"
+    - docker push "$IMAGE_NAME:latest"
+    - docker push "$IMAGE_NAME:${CI_COMMIT_SHORT_SHA}"
+  only:
+    - main
