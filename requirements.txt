@@ -1,0 +1,9 @@
+runpod>=1.0.0
+boto3
+pillow
+accelerate
+protobuf
+sentencepiece
+peft>=0.9.0
+huggingface_hub[cli]
+scipy
